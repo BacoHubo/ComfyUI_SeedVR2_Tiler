@@ -1,0 +1,14 @@
+[project]
+name = "ComfyUI_SeedVR2_Tiler"
+version = "1.0.0"
+description = "Tile Splitter and Stitcher nodes for SeedVR2 upscaling in ComfyUI"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/BacoHubo/ComfyUI_SeedVR2_Tiler"
+
+[tool.comfy]
+PublisherId = "bacohubo"
+DisplayName = "ComfyUI_SeedVR2_Tiler"
+Icon = ""
