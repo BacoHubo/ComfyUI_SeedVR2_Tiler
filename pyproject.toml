@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI_SeedVR2_Tiler"
-version = "1.1.0"
+version = "1.2.0"
 description = "Tile Splitter and Stitcher nodes for SeedVR2 upscaling in ComfyUI"
 license = { file = "LICENSE" }
 dependencies = []

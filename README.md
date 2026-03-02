@@ -1,7 +1,6 @@
 # ComfyUI SeedVR2 Tiler
 
-<img width="512" height="512" alt="SeedVR2 Tiler Workflow" src="https://github.com/user-attachments/assets/720b97f1-f705-470b-b5da-442a4c95e610" />
-
+<img width="512" height="512" alt="Tiler Workflow" src="https://github.com/user-attachments/assets/9c7735db-813c-4bdd-849d-47b594476f12" />
 
 
 A ComfyUI custom node pack for tiling large images through [SeedVR2](https://github.com/TencentARC/SeedVR) with overlap blending. Allows SeedVR2 to upscale images of any size by splitting them into tiles, processing each tile, and seamlessly stitching them back together.
@@ -9,13 +8,13 @@ A ComfyUI custom node pack for tiling large images through [SeedVR2](https://git
 ## Nodes
 
 ### SeedVR2 Tile Splitter
-Splits an image into a batch of overlapping tiles sized for SeedVR2's resolution constraints.
+Splits an image into a batch of overlapping tiles sized for SeedVR2's resolution constraints. When the image fits in a single tile, it is passed through completely untouched — output is identical to running SeedVR2 directly.
 
 **Inputs**
 - `image` — source image
 - `tile_size_mp` — maximum tile size in megapixels (default 1.0). Lower = less VRAM per pass
 - `tile_upscale_mp` — target resolution for SeedVR2 to upscale each tile to, in megapixels
-- `overlap_fraction` — overlap between adjacent tiles as a fraction of tile size (default 0.1)
+- `overlap_percent` — overlap between adjacent tiles as a percentage (default 10)
 - `feather_blend` — blend width for overlap stitching (0–1)
 
 **Outputs**
@@ -26,7 +25,7 @@ Splits an image into a batch of overlapping tiles sized for SeedVR2's resolution
 ---
 
 ### SeedVR2 Tile Splitter (Longest Edge)
-Same as the standard Tile Splitter but lets you specify your desired output size as a maximum longest edge in pixels. The resolution hint is computed automatically from your image's actual tile dimensions so it stays accurate regardless of tile count.
+Same as the standard Tile Splitter but lets you specify your desired output size as a longest edge in pixels. The Stitcher will resize the final output to hit the exact target dimensions.
 
 **Inputs**
 - `image` — source image
@@ -38,7 +37,7 @@ Same as the standard Tile Splitter but lets you specify your desired output size
 ---
 
 ### SeedVR2 Tile Splitter (Shortest Edge)
-Same as the standard Tile Splitter but lets you specify your desired output size as a minimum shortest edge in pixels.
+Same as the standard Tile Splitter but lets you specify your desired output size as a shortest edge in pixels. The Stitcher will resize the final output to hit the exact target dimensions.
 
 **Inputs**
 - `image` — source image
@@ -50,7 +49,7 @@ Same as the standard Tile Splitter but lets you specify your desired output size
 ---
 
 ### SeedVR2 Tile Splitter (Upscale Factor)
-Same as the standard Tile Splitter but lets you specify a simple upscale multiplier instead of megapixels. 2.0 = double the width and height of the final output.
+Same as the standard Tile Splitter but lets you specify a simple upscale multiplier instead of megapixels. The Stitcher will resize the final output to hit the exact target dimensions.
 
 **Inputs**
 - `image` — source image
@@ -62,14 +61,14 @@ Same as the standard Tile Splitter but lets you specify a simple upscale multipl
 ---
 
 ### SeedVR2 Tile Stitcher
-Reassembles the upscaled tile batch back into a single image using feathered blending over the overlap regions. The output is resized to preserve the exact aspect ratio of the original image.
+Reassembles the upscaled tile batch back into a single image using feathered blending over the overlap regions.
 
 **Inputs**
 - `upscaled_tiles` — IMAGE batch from SeedVR2
 - `tile_metadata` — from the Splitter
 
 **Outputs**
-- `image` — final stitched image at the correct aspect ratio
+- `image` — final stitched image
 
 ---
 
@@ -81,10 +80,9 @@ Load Image → Tile Splitter → tiles ─────────────�
                                             SeedVR2 → Tile Stitcher → Save Image
 ```
 
-<img width="2240" height="954" alt="Workflow" src="https://github.com/user-attachments/assets/249a5b81-6a1d-4ae2-ac68-e6b4f437363c" />
+<img width="1938" height="664" alt="Screenshot 2026-02-26 185301" src="https://github.com/user-attachments/assets/81e5e06f-6899-4250-8e41-0c0ceffcf700" />
 
-
-* Connect resolution to resolution and set max_resolution to 0. You can set a max resolution to further prevent OOM, but the nodes should help do this regardless
+- Connect `resolution` to SeedVR2's `resolution` input. Set `max_resolution` to 0 to disable the longest edge cap.
 
 For **multi-pass upscaling**, run the pipeline multiple times feeding the output back as input. Each pass progressively increases resolution.
 
@@ -114,6 +112,7 @@ No additional dependencies — uses only PyTorch and standard ComfyUI libraries.
 ## Notes
 - `tile_size_mp` of 0.5–1.0 works well for most 8GB VRAM GPUs
 - For poor quality source images, setting `tile_upscale_mp` close to `tile_size_mp` causes SeedVR2 to behave more as a restorer than an upscaler, often producing better results
+- The Longest Edge, Shortest Edge, and Upscale Factor nodes apply a final resize to hit exact output dimensions. The base MP node does not — it returns whatever SeedVR2 produces
 - Multi-pass upscaling works well — each pass feeds back into the Splitter as the new source image
 
 ---

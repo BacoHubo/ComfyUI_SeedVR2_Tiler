@@ -41,6 +41,20 @@ def _resize(img: torch.Tensor, h: int, w: int) -> torch.Tensor:
     return x.squeeze(0).permute(1, 2, 0).to(img.dtype)
 
 
+def _pad_to_canvas(img: torch.Tensor, canvas_h: int, canvas_w: int) -> torch.Tensor:
+    """Pad image to canvas size with edge replication (no resize, no blur).
+    Padding is added to the right and bottom only."""
+    H, W, C = img.shape
+    if H == canvas_h and W == canvas_w:
+        return img
+    # F.pad expects (N, C, H, W) and pads last dims first: (left, right, top, bottom)
+    x = img.permute(2, 0, 1).unsqueeze(0)
+    pad_w = canvas_w - W
+    pad_h = canvas_h - H
+    x = F.pad(x, (0, pad_w, 0, pad_h), mode='replicate')
+    return x.squeeze(0).permute(1, 2, 0).to(img.dtype)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Core grid algorithm
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,21 +274,30 @@ class SeedVR2TileSplitter:
         stride_w = grid["stride_w"]; stride_h = grid["stride_h"]
         canvas_w = grid["canvas_w"]; canvas_h = grid["canvas_h"]
 
-        if canvas_w != orig_W or canvas_h != orig_H:
-            canvas_img = _resize(img, canvas_h, canvas_w)
+        # Single tile fast path — send original image untouched, no padding or
+        # canvas resize. Stitcher will return SeedVR2 output pixel-perfect.
+        if cols == 1 and rows == 1:
+            tiles_tensor = img.unsqueeze(0)
+            positions    = [(0, 0)]
+            tile_w       = orig_W
+            tile_h       = orig_H
+            canvas_w     = orig_W
+            canvas_h     = orig_H
         else:
-            canvas_img = img
+            # Pad to canvas instead of resizing — preserves original pixel values
+            # with zero blur. Padding is replicated edge pixels, removed by stitcher.
+            canvas_img = _pad_to_canvas(img, canvas_h, canvas_w)
 
-        tiles: List[torch.Tensor] = []
-        positions: List[Tuple[int, int]] = []
-        for row in range(rows):
-            for col in range(cols):
-                x0 = col * stride_w
-                y0 = row * stride_h
-                tiles.append(canvas_img[y0 : y0 + tile_h, x0 : x0 + tile_w, :])
-                positions.append((x0, y0))
+            positions: List[Tuple[int, int]] = []
+            tiles: List[torch.Tensor] = []
+            for row in range(rows):
+                for col in range(cols):
+                    x0 = col * stride_w
+                    y0 = row * stride_h
+                    tiles.append(canvas_img[y0 : y0 + tile_h, x0 : x0 + tile_w, :])
+                    positions.append((x0, y0))
 
-        tiles_tensor = torch.stack(tiles, dim=0)
+            tiles_tensor = torch.stack(tiles, dim=0)
 
         # Compute resolution hint from actual tile dimensions.
         # If upscale_ratio provided, derive target tile dims directly — this is
@@ -297,6 +320,7 @@ class SeedVR2TileSplitter:
         meta: Dict[str, Any] = {
             "orig_w": orig_W, "orig_h": orig_H, "orig_c": C,
             "target_out_w": target_out_w, "target_out_h": target_out_h,
+            "pad_w": canvas_w - orig_W, "pad_h": canvas_h - orig_H,
             "canvas_w": canvas_w, "canvas_h": canvas_h,
             "cols": cols, "rows": rows, "n_tiles": cols * rows,
             "tile_w": tile_w, "tile_h": tile_h,
@@ -307,11 +331,11 @@ class SeedVR2TileSplitter:
             "resolution": resolution,
         }
 
+        pad_info = f"  (padded +{canvas_w-orig_W}x{canvas_h-orig_H})" if (canvas_w != orig_W or canvas_h != orig_H) else "  (exact)"
         print(
             f"\n[SeedVR2 Tile Splitter]"
             f"\n  Original : {orig_W}x{orig_H}"
-            f"\n  Canvas   : {canvas_w}x{canvas_h}"
-            f"{'  (resized)' if (canvas_w != orig_W or canvas_h != orig_H) else '  (exact)'}"
+            f"\n  Canvas   : {canvas_w}x{canvas_h}{pad_info}"
             f"\n  Grid     : {cols}x{rows} = {cols*rows} tiles"
             f"\n  Tile     : {tile_w}x{tile_h} = {tile_w*tile_h/1e6:.2f} MP"
             f"\n  Overlap  : {overlap_w}x{overlap_h} px  |  Stride: {stride_w}x{stride_h} px"
@@ -395,6 +419,35 @@ class SeedVR2TileStitcher:
         device = upscaled_tiles.device
         dtype  = upscaled_tiles.dtype
 
+        pad_w = meta.get("pad_w", 0)
+        pad_h = meta.get("pad_h", 0)
+
+        target_out_w = meta.get("target_out_w")
+        target_out_h = meta.get("target_out_h")
+
+        # Fast path: single tile, no padding, no target size — return SeedVR2
+        # output completely untouched before any canvas/blending math runs.
+        if n_tiles == 1 and pad_w == 0 and pad_h == 0 and not target_out_w:
+            final_w = up_w
+            final_h = up_h
+            print(f"  Output : {final_w}x{final_h}  ({final_w/orig_w:.3f}x  {final_h/orig_h:.3f}x)  [passthrough]")
+            return (upscaled_tiles,)
+
+        # Single tile path — crop padding if any, then resize to exact target if set
+        if n_tiles == 1:
+            tile = upscaled_tiles[0]
+            if pad_w > 0 or pad_h > 0:
+                crop_w = up_w - round(pad_w * scale_x)
+                crop_h = up_h - round(pad_h * scale_y)
+                tile = tile[:crop_h, :crop_w, :]
+            if target_out_w and target_out_h:
+                if tile.shape[1] != target_out_w or tile.shape[0] != target_out_h:
+                    tile = _resize(tile, target_out_h, target_out_w)
+            final_w = tile.shape[1]
+            final_h = tile.shape[0]
+            print(f"  Output : {final_w}x{final_h}  ({final_w/orig_w:.3f}x  {final_h/orig_h:.3f}x)  [single tile]")
+            return (tile.unsqueeze(0),)
+
         canvas  = torch.zeros(out_canvas_h, out_canvas_w, C, dtype=torch.float32, device=device)
         weights = torch.zeros(out_canvas_h, out_canvas_w, 1, dtype=torch.float32, device=device)
 
@@ -436,19 +489,25 @@ class SeedVR2TileStitcher:
 
         result = (canvas / weights.clamp(min=1e-8)).clamp(0.0, 1.0).to(dtype)
 
-        # If the variant nodes stored an exact target size, use it directly.
-        # Otherwise fall back to aspect-ratio-preserving resize from orig dimensions.
+        # Crop upscaled padding before final resize
+        if pad_w > 0 or pad_h > 0:
+            scale_x_actual = out_canvas_w / canvas_w
+            scale_y_actual = out_canvas_h / canvas_h
+            crop_w = out_canvas_w - round(pad_w * scale_x_actual)
+            crop_h = out_canvas_h - round(pad_h * scale_y_actual)
+            result = result[:crop_h, :crop_w, :]
+
         target_out_w = meta.get("target_out_w")
         target_out_h = meta.get("target_out_h")
 
         if target_out_w and target_out_h:
             final_w, final_h = target_out_w, target_out_h
         else:
-            eff_scale = math.sqrt((out_canvas_w / orig_w) * (out_canvas_h / orig_h))
+            eff_scale = math.sqrt((result.shape[1] / orig_w) * (result.shape[0] / orig_h))
             final_w   = round(orig_w * eff_scale)
             final_h   = round(orig_h * eff_scale)
 
-        if final_w != out_canvas_w or final_h != out_canvas_h:
+        if result.shape[1] != final_w or result.shape[0] != final_h:
             result = _resize(result, final_h, final_w)
 
         print(f"  Output : {final_w}x{final_h}  ({final_w/orig_w:.3f}x  {final_h/orig_h:.3f}x)")
