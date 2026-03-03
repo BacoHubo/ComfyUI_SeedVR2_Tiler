@@ -5,6 +5,18 @@
 
 A ComfyUI custom node pack for tiling large images through [SeedVR2](https://github.com/TencentARC/SeedVR) with overlap blending. Allows SeedVR2 to upscale images of any size by splitting them into tiles, processing each tile, and seamlessly stitching them back together.
 
+## Updates
+
+**v1.2.0**
+- Fixed single tile passthrough — output is now identical to running SeedVR2 directly
+- Switched from canvas resize to edge-replication padding, preserving original pixel values
+
+**v1.1.0**
+- Added Longest Edge, Shortest Edge, and Upscale Factor splitter nodes
+
+**v1.0.0**
+- Initial release with Tile Splitter and Tile Stitcher nodes
+
 ## Nodes
 
 ### SeedVR2 Tile Splitter
